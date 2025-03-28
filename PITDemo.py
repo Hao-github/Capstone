@@ -181,6 +181,4 @@ if __name__ == "__main__":
     for key in keys:
         pit.insert(key)
 
-    print("BFS traversal of the Red-Black Tree:")
-    pit.bfs()
     print(pit.query_interval_overlap(pit.root, 15, 45))
