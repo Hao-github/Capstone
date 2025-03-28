@@ -31,3 +31,6 @@ which is the overlapping intervals of the query interval (15, 45) with the given
 2. Need to consider the case when the interval including the infinity, such as `(10, inf)` or `(inf, 50)`.
 3. Need to create a query function to transform a list of tuples `(attr, value)` to the list of intervals, so that we can use the PIT to answer range queries.
    
+# Confusion
+1. How to apply this PIT to those data structures in postgreSQL?
+2. For the link you provided, Some dataset is outdated, so I cannot create the dataset for the PIT, And I have no idea about how to apply the Python code to the PostgreSQL, but just use it to operate the data in the sql, using tools like sqlachemy.
