@@ -3,4 +3,4 @@ database_config:
   port: 5432
   user: postgres
   password: RobinL0228
-  database: imdbload
+  database: imdb
