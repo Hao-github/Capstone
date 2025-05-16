@@ -2,9 +2,11 @@ from model.PartitionNode import PartitionNode
 
 
 class PartitionIndexTree:
-    def __init__(self):
+    def __init__(self, intervals: list[tuple]):
         self.nil = PartitionNode.EMPTY_NODE
         self.root = self.nil
+        for interval in intervals:
+            self.insert(interval)
 
     def insert(self, key: tuple):
         new_node = PartitionNode(key)
@@ -15,11 +17,11 @@ class PartitionIndexTree:
         # Traverse the tree to find the correct position for the new node
         while current != self.nil:
             parent = current
-            if new_node.key[1] <= current.key[0]:
-                current.min = min(current.min, new_node.key[0])
+            if new_node.interval_end <= current.interval_start:
+                current.min = min(current.min, new_node.interval_start)
                 current = current.left
-            elif new_node.key[0] >= current.key[1]:
-                current.max = max(current.max, new_node.key[1])
+            elif new_node.interval_start >= current.interval_end:
+                current.max = max(current.max, new_node.interval_end)
                 current = current.right
             else:
                 # The new node overlaps with the current node
@@ -30,7 +32,7 @@ class PartitionIndexTree:
         new_node.parent = parent
         if parent == self.nil:  # The tree is empty
             self.root = new_node
-        elif new_node.key[1] <= parent.key[0]:
+        elif new_node.interval_end <= parent.interval_start:
             parent.left = new_node
         else:
             parent.right = new_node
@@ -126,14 +128,25 @@ class PartitionIndexTree:
             return
         # The max value of node should be the maximum of its right child's max value and its own end value
         node.max = (
-            max(node.right.max, node.key[1]) if node.right != self.nil else node.key[1]
+            max(node.right.max, node.interval_end)
+            if node.right != self.nil
+            else node.interval_end
         )
         # The min value of node should be the minimum of its left child's min value and its own start value
         node.min = (
-            min(node.left.min, node.key[0]) if node.left != self.nil else node.key[0]
+            min(node.left.min, node.interval_start)
+            if node.left != self.nil
+            else node.interval_start
         )
 
-    def query_interval_overlap(
+    def query_interval_overlap(self, interval: tuple[str, int, int]) -> list:
+        """
+        Query all intervals that overlap with the interval [start, end).
+        """
+        _, start, end = interval
+        return self.__query_interval_overlap(self.root, start, end)
+
+    def __query_interval_overlap(
         self, current: PartitionNode, start: int, end: int
     ) -> list:
         """
@@ -146,14 +159,14 @@ class PartitionIndexTree:
         if start > end or start > current.max or end < current.min:
             # The interval [start, end) is larger than all intervals in the subtrees
             return result
-        if end >= current.key[0] and start < current.key[1]:
+        if end >= current.interval_start and start < current.interval_end:
             # The interval [start, end) overlaps with the current interval
             result.append(current.key)
-        if start < current.key[0]:
+        if start < current.interval_start:
             # The interval [start, end) may overlap with the left subtree
-            result.extend(self.query_interval_overlap(current.left, start, end))
-        if end >= current.key[1]:
+            result.extend(self.__query_interval_overlap(current.left, start, end))
+        if end >= current.interval_end:
             # The interval [start, end) may overlap with the right subtree
-            result.extend(self.query_interval_overlap(current.right, start, end))
+            result.extend(self.__query_interval_overlap(current.right, start, end))
 
         return result
