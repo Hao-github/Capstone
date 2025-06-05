@@ -1,4 +1,6 @@
 from model.PartitionNode import PartitionNode
+from typing import Any
+from itertools import product
 
 
 class PartitionIndexTree:
@@ -139,12 +141,13 @@ class PartitionIndexTree:
             else node.interval_start
         )
 
-    def query_interval_overlap(self, interval: tuple[str, int, int]) -> list:
+    def query_interval_overlap(self, interval: tuple[int, int, Any]) -> list:
         """
         Query all intervals that overlap with the interval [start, end).
         """
-        _, start, end = interval
-        return self.__query_interval_overlap(self.root, start, end)
+        start, end, value = interval
+        result = self.__query_interval_overlap(self.root, start, end)
+        return list(product(value, result))
 
     def __query_interval_overlap(
         self, current: PartitionNode, start: int, end: int
@@ -159,9 +162,9 @@ class PartitionIndexTree:
         if start > end or start > current.max or end < current.min:
             # The interval [start, end) is larger than all intervals in the subtrees
             return result
-        if end >= current.interval_start and start < current.interval_end:
+        if end > current.interval_start and start < current.interval_end:
             # The interval [start, end) overlaps with the current interval
-            result.append(current.key)
+            result.extend(current.value)
         if start < current.interval_start:
             # The interval [start, end) may overlap with the left subtree
             result.extend(self.__query_interval_overlap(current.left, start, end))

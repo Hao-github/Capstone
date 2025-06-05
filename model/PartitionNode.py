@@ -16,20 +16,21 @@ class PartitionNode:
         self.left: PartitionNode = PartitionNode.EMPTY_NODE
         self.right: PartitionNode = PartitionNode.EMPTY_NODE
         self.parent: PartitionNode = PartitionNode.EMPTY_NODE
-        self.max = key[2]  # max represents the end value of the interval
-        self.min = key[1]  # min represents the start value of the interval
-    @property
-    def partition_name(self):
-        return self.key[0]
+        # min, max represents the minimum and maximum value of the subtree rooted at this node
+        self.min = key[0]
+        self.max = key[1]
 
     @property
     def interval_start(self):
-        return self.key[1]
+        return self.key[0]
 
     @property
     def interval_end(self):
-        return self.key[2]
+        return self.key[1]
 
+    @property
+    def value(self):
+        return self.key[2]
 
 
 PartitionNode.initialize_empty_node()
