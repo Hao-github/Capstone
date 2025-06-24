@@ -147,7 +147,7 @@ class PartitionIndexTree:
         """
         start, end, value = interval
         result = self.__query_interval_overlap(self.root, start, end)
-        return list(product(value, result))
+        return list(product(result, value))
 
     def __query_interval_overlap(
         self, current: PartitionNode, start: int, end: int

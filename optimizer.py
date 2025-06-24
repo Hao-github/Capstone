@@ -1,385 +1,332 @@
-import re
+from __future__ import annotations
 from collections import defaultdict
-from typing import List, Dict, Tuple, Any, Optional
+from typing import Any
+
+from sqlglot import expressions as exp
+
+from config.config import load_config
+from database.TablePartitioner import TablePartitioner
+from SQLOptimizer import SQLOptimizer
+from functools import reduce
+import networkx as nx
 
 
-# def extract_join_graph_from_sql(sql):
-#     pattern = r"(\w+)\.\w+\s+=\s+(\w+)\.\w+"
-#     matches = re.findall(pattern, sql)
-
-#     graph = {}
-#     for table1, table2 in matches:
-#         if table1 not in graph:
-#             graph[table1] = []
-#         if table2 not in graph:
-#             graph[table2] = []
-
-#         if table2 not in graph[table1]:
-#             graph[table1].append(table2)
-#         if table1 not in graph[table2]:
-#             graph[table2].append(table1)
-
-#     return graph
-
-def extract_join_graph_from_sql(sql: str):
+def enumerate_join_orders(edges: list[tuple[str, str]]) -> list[list[tuple[str, str]]]:
     """
-    解析 SQL，输出以逻辑表名为 key 的 join graph。
-    如：{ 'movie_companies': ['title', 'movie_info_idx'] }
+    enumerate all possible join orders for a list of join edges
+    to reduce the complexity of the join order search, we only consider
+    the cases when we add a new join edge to the existing join order,
+    the edges can still be connected graph.
+    Input:
+        edges: [('t1', 't2'), ('t2', 't3'), ('t3', 't4'), ('t1', 't3)]
+        K: limitation or join orders
+    Output:
+        [
+            [('t1', 't2'), ('t2', 't3'), ('t3', 't4')],
+            [('t4', 't3'), ('t3', 't2'), ('t2', 't1')],
+            [('t1', 't3'), ('t3', 't2'), ('t3', 't4')],
+            ...
+        ] example sql has 12 possible join orders
     """
-    # 1. 构建别名 -> 逻辑表名映射
-    alias_map = {}
-    from_match = re.search(r'FROM\s+(.+?)\s+WHERE', sql, re.IGNORECASE | re.DOTALL)
-    if from_match:
-        from_clause = from_match.group(1)
-        entries = [x.strip() for x in from_clause.split(',')]
-        for entry in entries:
-            match = re.match(r'(\w+)\s+(?:AS\s+)?(\w+)', entry, re.IGNORECASE)
-            if match:
-                table_name, alias = match.group(1), match.group(2)
-                alias_map[alias] = table_name
-
-    # 2. 提取等值连接：别名.key = 别名.key
-    pattern = r"(\w+)\.\w+\s*=\s*(\w+)\.\w+"
-    matches = re.findall(pattern, sql)
-
-    # 3. 构建逻辑表 join graph
-    graph = {}
-    for alias1, alias2 in matches:
-        table1 = alias_map.get(alias1)
-        table2 = alias_map.get(alias2)
-        if not table1 or not table2:
-            continue
-        if table1 not in graph:
-            graph[table1] = []
-        if table2 not in graph:
-            graph[table2] = []
-        if table2 not in graph[table1]:
-            graph[table1].append(table2)
-        if table1 not in graph[table2]:
-            graph[table2].append(table1)
-
-    return graph
-
-
-def enumerate_join_orders(graph: dict) -> list[list[str]]:
     results = []
+    edges_map = defaultdict(list)
+    for edge in edges:
+        left, right = edge
+        edges_map[left].append((left, right))
+        edges_map[right].append((right, left))
+    nodes_num = len(edges_map)
 
-    def dfs(path, visited):
-        if len(path) == len(graph):
-            results.append(path[:])
-            return
-        last = path[-1]
-        for neighbor in graph[last]:
-            if neighbor not in visited:
-                visited.add(neighbor)
-                path.append(neighbor)
-                dfs(path, visited)
-                path.pop()
-                visited.remove(neighbor)
+    def dfs(
+        path: list[tuple[str, str]],
+        visited: set[str],
+        waiting_edges: list[tuple[str, str]],
+    ):
+        while waiting_edges:
+            # ensure left is in the visited set
+            left, right = waiting_edges.pop()
+            if right in visited:
+                continue
+            visited.add(right)
+            path.append((left, right))
+            if len(visited) == nodes_num:
+                results.append(path[:])
+            else:
+                dfs(path, visited, waiting_edges + edges_map[right])
+            path.pop()
+            visited.remove(right)
 
-    for start in graph:
-        dfs([start], {start})
+    if nodes_num > 1:
+        for edge in edges:
+            left, right = edge
+            dfs([edge], {left, right}, edges_map[left] + edges_map[right])
+
     return results
 
-def match_partitions_via_pit(left: str, right: str, sub_tables: dict) -> dict:
-    """
-    构造 left 表和 right 表下所有子表的配对，返回配对 dict。
-
-    输入：
-        left: 左表名称，如 'R'
-        right: 右表名称，如 'S'
-        sub_tables: dict，如 {'R': ['R1', 'R2'], 'S': ['S12', 'S13']}
-
-    输出：
-        dict[(str, str)] -> True
-        如 {('R1', 'S12'): True, ('R2', 'S13'): True, ...}
-    """
-    pairs = {}
-    left_subs = sub_tables.get(left, [])
-    right_subs = sub_tables.get(right, [])
-
-    for l in left_subs:
-        for r in right_subs:
-            pairs[(l, r)] = True  # 后续可以改为实际的 PIT 计算
-    return pairs
-
-def cluster_partition_pairs(pairs: Dict[Tuple[str, str], bool]) -> List[Tuple[List[str], List[str]]]:
-    """
-    输入：
-        pairs: dict 格式，{(left_partition, right_partition): True, ...}
-
-    输出：
-        聚合后的 cluster 列表 [(left_group, right_group), ...]
-        例如：[(['R1'], ['S12', 'S13']), (['R2'], ['S22', 'S23'])]
-    """
-    cluster_map = defaultdict(lambda: (set(), set()))
-
-    for (l, r), ok in pairs.items():
-        if not ok:
-            continue
-        cluster_map[l][0].add(l)
-        cluster_map[l][1].add(r)
-
-    clusters = []
-    for lefts, rights in cluster_map.values():
-        clusters.append((list(lefts), list(rights)))
-    return clusters
-
-
-def build_cluster_graph(graph, sub_tables):
-    cluster_map = {}
-    for t1 in graph:
-        for t2 in graph[t1]:
-            if t1 < t2:
-                pairs = match_partitions_via_pit(t1, t2, sub_tables)
-                clusters = cluster_partition_pairs(pairs)
-                cluster_map[(t1, t2)] = clusters
-    return cluster_map
 
 def resolve_join_union_order(
-    join_order: List[str],
-    cluster_map: Dict[Tuple[str, str], List[Tuple[List[str], List[str]]]]
-) -> Dict[str, Any]:
+    join_order: list[tuple[str, str]],
+    cluster_map: dict[tuple[str, str], dict[str, Any]],
+) -> list[dict[str, Any]]:
     """
-    返回 join-union 顺序结构，仅包含 join 关系和子表聚合结构。    
+    返回 join-union 顺序结构，仅包含 join 关系和子表聚合结构。
     输出示例：
     [
-        {
-            "join": ("R", "S"),
-            "pairs": [
-                {"left": ["R1"], "right": ["S12", "S13"]},
-                ...
-            ]
-        },
+            {
+                "join": ("R", "S"),
+                "pairs": [
+                    (["R1"], ["S11", "S12"]),
+                    (["R2"], ["S21", "S22"])
+                    ...
+                ],
+                "on": ("id", "id"),
+            }
         ...
     ]
     """
     plan_steps = []
-    
-    for i in range(len(join_order) - 1):
-        t1, t2 = join_order[i], join_order[i + 1]
-        key = (t1, t2) if (t1, t2) in cluster_map else (t2, t1)
-        clusters = cluster_map.get(key, [])
-        
-        pair_list = []
-        for lefts, rights in clusters:
-            if key == (t1, t2):
-                pair_list.append({"left": lefts, "right": rights})
-            else:
-                pair_list.append({"left": rights, "right": lefts})
-        
-        plan_steps.append({
-            "join": (t1, t2),
-            "pairs": pair_list
-        })
 
+    for join in join_order:
+        t1, t2 = join
+        if pair_list := cluster_map.get((t1, t2), {}):
+            plan_steps.append(
+                {"join": (t1, t2), "pairs": pair_list["pairs"], "on": pair_list["on"]}
+            )
+        elif pair_list := cluster_map.get((t2, t1), {}):
+            reversed_pairs = [
+                (p[1], p[0]) for p in pair_list["pairs"]
+            ]  # 交换左右两边的聚合键
+            plan_steps.append(
+                {
+                    "join": (t1, t2),
+                    "pairs": reversed_pairs,
+                    "on": (pair_list["on"][1], pair_list["on"][0]),
+                }
+            )
+        else:
+            raise ValueError(f"No join condition found for {t1} and {t2}")
     return plan_steps
 
 
-def generate_baseline_sql(base_sql: str, sub_tables: Dict[str, List[str]], join_order: Optional[List[str]] = None) -> str:
-    """
-    将原始 SQL 改写为子表 UNION ALL 聚合 + Leading Hint 的 baseline 形式，保留表别名。
+class JoinExpr:
+    def __init__(self, alias, left_col, right_col, left_table_expr, right_table_expr):
+        self.join_expr = self.create_join_expr(
+            left_col, right_col, left_table_expr, right_table_expr
+        )
+        self.alias = alias
+        self.sql = self.join_expr.sql()
+        self.related_tables: set[str] = set()
 
-    参数:
-        base_sql: 原始 SQL，例如 SELECT * FROM A AS a, B AS b WHERE ...
-        sub_tables: 映射表逻辑名到子表名列表，例如 {'A': ['A1', 'A2']}
-        join_order: 使用别名构成的 JOIN 顺序，例如 ['a', 'b']
-    
-    返回:
-        改写后的 SQL 字符串，包含 Hint 和子表 UNION ALL 聚合
-    """
+    def create_join_expr(self, left_col, right_col, left_table_expr, right_table_expr):
+        if left_col == right_col:
+            return (
+                exp.select("*")
+                .from_(left_table_expr)
+                .join(right_table_expr, using=[left_col])
+            )
+        return (
+            exp.select("*")
+            .from_(left_table_expr)
+            .join(
+                right_table_expr,
+                on=exp.EQ(
+                    this=exp.column(left_col, table=left_table_expr.alias_or_name),
+                    expression=exp.column(
+                        right_col, table=right_table_expr.alias_or_name
+                    ),
+                ),
+            )
+        )
 
-    # 1. 构造逻辑表 -> 子表 UNION ALL 块（延后加别名）
-    union_blocks = {}
-    for table, parts in sub_tables.items():
-        union_sql = "\nUNION ALL\n".join([f"SELECT * FROM {p}" for p in parts])
-        union_blocks[table.lower()] = f"( {union_sql} )"
-
-    # 2. 提取 FROM 中的原始表和别名
-    from_match = re.search(r'FROM\s+(.+?)\s+WHERE', base_sql, re.IGNORECASE | re.DOTALL)
-    if not from_match:
-        return "-- Error: Could not parse FROM clause."
-    
-    from_clause = from_match.group(1)
-    from_entries = [entry.strip() for entry in from_clause.split(",")]
-
-    alias_map = {}  # alias -> logical table
-    rewritten_from = []
-
-    for entry in from_entries:
-        match = re.match(r'(\w+)\s+(?:AS\s+)?(\w+)', entry, re.IGNORECASE)
-        if not match:
-            return f"-- Error parsing FROM entry: {entry}"
-        table, alias = match.group(1).lower(), match.group(2)
-        alias_map[alias] = table
-        if table in union_blocks:
-            rewritten_from.append(f"{union_blocks[table]} AS {alias}")
-        else:
-            rewritten_from.append(entry)
-
-    rewritten_from_clause = ",\n     ".join(rewritten_from)
-
-    # 3. 替换 FROM 子句
-    rewritten_sql = re.sub(
-        r'FROM\s+(.+?)\s+WHERE',
-        f'FROM {rewritten_from_clause} WHERE',
-        base_sql,
-        flags=re.IGNORECASE | re.DOTALL
-    )
-
-    # 4. 插入 Hint（使用别名）
-    hint = f"/*+ Leading({ ' '.join(join_order) }) */" if join_order else ""
-    final_sql = f"{hint}\n{rewritten_sql.strip()}" if hint else rewritten_sql.strip()
-
-    return final_sql
+    def __str__(self):
+        return self.join_expr.sql()
 
 
-def generate_recursive_cluster_sql(
-    base_sql: str,
-    join_union_order: List[Dict[str, Any]],
-    join_keys: Dict[Tuple[str, str], Tuple[str, str]] = None,
-    filters: Dict[str, str] = None
-) -> str:
+class Block:
+    def __init__(self, tbls: list[str], table: str, alias: str, join_expr: JoinExpr):
+        self.cte_expr = reduce(
+            lambda x, y: x.union(y, all=True),
+            [exp.select("*").from_(exp.to_table(t, db=table)) for t in tbls],
+        )
+        self.alias = alias
+        self.join_expr = join_expr
+        self.join_expr.related_tables.update(tbls)
+
+
+def generate_recursive_cluster_sql(join_union_order: list[dict[str, Any]]) -> str:
     """
     递归构造聚合式 SQL
+    INPUT:
+        join_union_order: 输出 resolve_join_union_order 函数的结果
+        join_keys: 用于指定 join 条件，如果不指定，则使用默认 join 条件
+    OUTPUT:
+        聚合式 SQL
+    Example:
+        join_union_order = [
+            {
+                "join": ("R", "S"),
+                "pairs": [
+                    (["R1"], ["S11", "S12"]),
+                    (["R2"], ["S21", "S22"])
+                    ...
+                ],
+                "on": ("id", "id"),
+            }
+        ]
     """
 
-    join_keys = join_keys or {}
-    filters = filters or {}
+    # 结构示例：
+    # Before:
+    # T join S on T.id = S.id
+    # table     cte_expr                                       join_expr
+    # R1        SELECT * FROM R1                               r1 JOIN s1 ON r1.id = s1.id
+    # R2        SELECT * FROM R2                               r2 JOIN s2 ON r2.id = s2.id
+    # S11       SELECT * FROM S11 UNION ALL SELECT * FROM S12  r1 JOIN s1 ON r1.id = s1.id
+    # S12       SELECT * FROM S11 UNION ALL SELECT * FROM S12  r1 JOIN s1 ON r1.id = s1.id
+    # S21       SELECT * FROM S21 UNION ALL SELECT * FROM S22  r2 JOIN s2 ON r2.id = s2.id
+    # S22       SELECT * FROM S21 UNION ALL SELECT * FROM S22  r2 JOIN s2 ON r2.id = s2.id
+    # T         SELECT * FROM T                                ?
+    # After:
+    # table     cte_expr                                       join_expr
+    # R1        SELECT * FROM R1                               t JOIN (r1 JOIN s1 ON r1.id = s1.id UNION ALL r2 JOIN s2 ON r2.id = s2.id) AS r1_s1_r2_s2 ON r1_s1_r2_s2.id = t.id
+    # R2        SELECT * FROM R2                               t JOIN (r1 JOIN s1 ON r1.id = s1.id UNION ALL r2 JOIN s2 ON r2.id = s2.id) AS r1_s1_r2_s2 ON r1_s1_r2_s2.id = t.id
+    # S11       SELECT * FROM S11 UNION ALL SELECT * FROM S12  t JOIN (r1 JOIN s1 ON r1.id = s1.id UNION ALL r2 JOIN s2 ON r2.id = s2.id) AS r1_s1_r2_s2 ON r1_s1_r2_s2.id = t.id
+    # S12       SELECT * FROM S11 UNION ALL SELECT * FROM S12  t JOIN (r1 JOIN s1 ON r1.id = s1.id UNION ALL r2 JOIN s2 ON r2.id = s2.id) AS r1_s1_r2_s2 ON r1_s1_r2_s2.id = t.id
+    # S21       SELECT * FROM S21 UNION ALL SELECT * FROM S22  t JOIN (r1 JOIN s1 ON r1.id = s1.id UNION ALL r2 JOIN s2 ON r2.id = s2.id) AS r1_s1_r2_s2 ON r1_s1_r2_s2.id = t.id
+    # S22       SELECT * FROM S21 UNION ALL SELECT * FROM S22  t JOIN (r1 JOIN s1 ON r1.id = s1.id UNION ALL r2 JOIN s2 ON r2.id = s2.id) AS r1_s1_r2_s2 ON r1_s1_r2_s2.id = t.id
+    # T         SELECT * FROM T                                t JOIN (r1 JOIN s1 ON r1.id = s1.id UNION ALL r2 JOIN s2 ON r2.id = s2.id) AS r1_s1_r2_s2 ON r1_s1_r2_s2.id = t.id
+    table2block: dict[str, Block] = {}  # 存放 table-Block
+    alias2join_expr: dict[str, JoinExpr] = {}  # 存放 alias-JoinExpr
+    for step, join_struct in enumerate(join_union_order):
+        left_col, right_col = join_struct["on"]
+        left_table, right_table = join_struct["join"]
+        if step == 0:
+            for step_idx, pair in enumerate(join_struct["pairs"]):
+                lefts, rights = pair
+                left_alias = f"{left_table}_{step}_{step_idx}"
+                right_alias = f"{right_table}_{step}_{step_idx}"
+                join_alias = f"{left_alias}_{right_alias}_{step_idx}"
+                left_table_expr = exp.to_table(left_alias)
+                right_table_expr = exp.to_table(right_alias)
+                join_expr = JoinExpr(
+                    join_alias, left_col, right_col, left_table_expr, right_table_expr
+                )
+                left_block = Block(lefts, left_table, left_alias, join_expr)
+                right_block = Block(rights, right_table, right_alias, join_expr)
+                alias2join_expr[join_alias] = join_expr
+                for table in lefts:
+                    table2block[table] = left_block
+                for table in rights:
+                    table2block[table] = right_block
+            continue
 
-    # 提取全局 WHERE 子句（用于 fallback）
-    where_clause = ""
-    where_match = re.search(r'WHERE\s+(.+)', base_sql, re.IGNORECASE | re.DOTALL)
-    if where_match:
-        where_clause = "WHERE " + where_match.group(1).strip()
+        values = create_biparite(table2block, join_struct)
+        for step_idx, pair in enumerate(values):
+            lefts, rights = pair
+            left_alias = f"{left_table}_{step}_{step_idx}"
+            right_alias = f"{right_table}_{step}_{step_idx}"
+            join_alias = f"{left_alias}_{right_alias}_{step_idx}"
+            lefts_expr_set = set()
+            realated_left_tables = set()
+            for lefts_alias in lefts:
+                lefts_expr_set.add(alias2join_expr[lefts_alias].join_expr)
+                realated_left_tables.update(alias2join_expr[lefts_alias].related_tables)
 
-    current_sql_blocks = []
+            if len(lefts_expr_set) > 1:
+                left_table_expr = exp.alias_(
+                    exp.paren(
+                        reduce(lambda x, y: x.union(y, all=True), lefts_expr_set)
+                    ),
+                    left_alias,
+                )
+            else:
+                left_table_expr = exp.alias_(
+                    exp.paren(lefts_expr_set.pop()), left_alias
+                )
 
-    for step_idx, step in enumerate(join_union_order):
-        join_pair_sql = []
-        for pair in step["pairs"]:
-            lefts = pair["left"]
-            rights = pair["right"]
-            on_keys = pair.get("on", ("key", "key"))
-            pair_filters = pair.get("filter", {})
+            right_table_expr = exp.to_table(right_alias)
+            join_expr = JoinExpr(
+                join_alias, left_col, right_col, left_table_expr, right_table_expr
+            )
+            join_expr.related_tables.update(realated_left_tables)
+            right_block = Block(rights, right_table, right_alias, join_expr)
+            alias2join_expr[join_alias] = join_expr
+            for table in rights:
+                table2block[table] = right_block
+            for table in realated_left_tables:
+                table2block[table].join_expr = join_expr
+    remaining_blocks: set[Block] = set(table2block.values())
+    final_expr_set = set(block.join_expr.join_expr for block in remaining_blocks)
+    final_expr = reduce(lambda x, y: x.union(y, all=True), final_expr_set)
 
-            def build_select_block(tbls):
-                selects = []
-                for t in tbls:
-                    cond = filters.get(t, "") or pair_filters.get(t, "")
-                    selects.append(f"SELECT * FROM {t}" + (f" WHERE {cond}" if cond else ""))
-                return selects[0] if len(selects) == 1 else f"(\n" + "\nUNION ALL\n".join(selects) + "\n)"
+    for block in remaining_blocks:
+        final_expr = final_expr.with_(block.alias, block.cte_expr)
 
-            left_block = build_select_block(lefts)
-            right_block = build_select_block(rights)
-            left_col, right_col = on_keys
-
-            join_sql = f"{left_block} JOIN {right_block} ON {lefts[0]}.{left_col} = {rights[0]}.{right_col}"
-            join_pair_sql.append(f"({join_sql})")
-
-        step_union_sql = "\nUNION ALL\n".join(join_pair_sql)
-
-        if step_idx == 0:
-            current_sql_blocks.append(f"({step_union_sql})")
-        else:
-            current_sql_blocks = [
-                f"({prev_block} JOIN ({step_union_sql}) ON 1=1)"
-                for prev_block in current_sql_blocks
-            ]
-
-    final_sql = f"SELECT * FROM {current_sql_blocks[0]}"
-    if where_clause:
-        final_sql += f"\n{where_clause}"
-    return final_sql
-
-
-def extract_join_keys_from_sql(sql: str) -> Dict[Tuple[str, str], Tuple[str, str]]:
-    """
-    提取 SQL 中的 join 键，返回 {(table1, table2): (col1, col2)}
-    仅处理等值连接 a.col = b.col
-    """
-    pattern = r"(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)"
-    matches = re.findall(pattern, sql)
-    result = {}
-    for t1, c1, t2, c2 in matches:
-        key = tuple(sorted([t1, t2]))
-        if key[0] == t1:
-            result[(t1, t2)] = (c1, c2)
-        else:
-            result[(t2, t1)] = (c2, c1)
-    return result
-
-def extract_filters_from_sql(sql: str) -> Dict[str, str]:
-    """
-    粗略提取 WHERE 中的 filter 子句，返回 {alias: condition_string}
-    例如 { 'mc': "note LIKE ... AND ..." }
-    """
-    where_clause = ""
-    where_match = re.search(r'WHERE\s+(.+)', sql, re.IGNORECASE | re.DOTALL)
-    if where_match:
-        where_clause = where_match.group(1).strip()
-
-    conditions = re.split(r'\s+(AND|OR)\s+', where_clause)
-
-    filter_map = defaultdict(list)
-    for cond in conditions:
-        m = re.match(r"(\w+)\.", cond)
-        if m:
-            alias = m.group(1)
-            filter_map[alias].append(cond.strip())
-
-    return {k: " AND ".join(v) for k, v in filter_map.items()}
+    return final_expr.sql()
 
 
-def optimizer(sql: str, sub_tables: dict):
-    #print(generate_baseline_sql(sql, sub_tables))
-    graph = extract_join_graph_from_sql(sql)
-    print(graph)
-    join_orders = enumerate_join_orders(graph)
-    print(join_orders)
-    cluster_map = build_cluster_graph(graph, sub_tables)
-    print(cluster_map)
-    join_keys = extract_join_keys_from_sql(sql)
-    filters = extract_filters_from_sql(sql)
-    sql_with_hints = []
-    print(len(join_orders))
+def create_biparite(table2block: dict[str, Block], join_struct):
+    G = nx.Graph()
+    for pair in join_struct["pairs"]:
+        lefts, rights = pair
+        for table in lefts:
+            G.add_node(table2block[table].join_expr.alias, bipartite=0)
+            for right in rights:
+                G.add_node(right, bipartite=1)
+                G.add_edge(table2block[table].join_expr.alias, right)
+        # 构造bipartite graph
+    values = []
+    for componenent in nx.connected_components(G):
+        values.append(
+            (
+                [n for n in componenent if G.nodes[n]["bipartite"] == 0],
+                [n for n in componenent if G.nodes[n]["bipartite"] == 1],
+            )
+        )
+
+    return values
+
+
+def optimizer(so: SQLOptimizer) -> tuple[list[str], str]:
+    cluster_map = so.get_cluster_map(to_json=True)
+    join_orders = enumerate_join_orders(list(cluster_map.keys()))
+    baseline_query = so.get_baseline_query()
+    ret = []
     for order in join_orders:
         join_union_order = resolve_join_union_order(order, cluster_map)
-        final_sql = generate_recursive_cluster_sql(sql, join_union_order)
-        print(final_sql)
-        sql_with_hints.append(final_sql)
+        final_sql = generate_recursive_cluster_sql(join_union_order)
+        ret.append(final_sql)
+    return ret, baseline_query
+    # sql_with_hints.append(final_sql)
+
 
 example_sql = """
-SELECT MIN(mc.note) AS production_note,
-       MIN(t.title) AS movie_title,
-       MIN(t.production_year) AS movie_year
+SELECT * 
 FROM company_type AS ct,
      info_type AS it,
      movie_companies AS mc,
      movie_info_idx AS mi_idx,
      title AS t
-WHERE ct.kind = 'production companies'
-  AND it.info = 'top 250 rank'
-  AND mc.note NOT LIKE '%(as Metro-Goldwyn-Mayer Pictures)%'
-  AND (mc.note LIKE '%(co-production)%'
-       OR mc.note LIKE '%(presents)%')
-  AND ct.id = mc.company_type_id
+WHERE ct.id = mc.company_type_id
   AND t.id = mc.movie_id
   AND t.id = mi_idx.movie_id
   AND mc.movie_id = mi_idx.movie_id
   AND it.id = mi_idx.info_type_id;
 """
 
-# 构造模拟子表映射（sub_tables），每张表模拟几个分区
-example_sub_tables = {
-    'company_type': ['ct1', 'ct2'],
-    'info_type': ['it1'],
-    'movie_companies': ['mc1', 'mc2', 'mc3'],
-    'movie_info_idx': ['mi_idx1', 'mi_idx2'],
-    'title': ['t1', 't2']
-}
 
-
-
-optimizer(example_sql, example_sub_tables)
-
+if __name__ == "__main__":
+    config = load_config()
+    tp = TablePartitioner(config)
+    so = SQLOptimizer(example_sql, tp.get_schema_metadata())
+    sql_with_hints, baseline_query = optimizer(so)
+    with open("baseline_query.sql", "w") as f:
+        f.write(baseline_query)
+    print("baseline_query:", tp.measure_merge_time(baseline_query))
+    for idx, sql in enumerate(sql_with_hints):
+        with open(f"sql_with_hints_{idx}.sql", "w") as f:
+            f.write(sql)
+        try:
+            
+            print(f"sql_{idx}:", tp.measure_merge_time(sql))
+        except Exception:
+            print(f"sql_{idx} cannot be executed")

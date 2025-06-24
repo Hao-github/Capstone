@@ -32,7 +32,7 @@ class TablePartitioner(DatabaseHandler):
         ranges = self.get_partition_ranges(min_value, max_value, partition_size)
         columns = self.get_table_columns(source_table)
 
-        prefix = f"pit_{source_table}"
+        prefix = f"{source_table}"
         pit_schema = prefix
         pit_metadata_table = f"{prefix}_metadata"
         self.drop_schema(pit_schema)
@@ -84,7 +84,7 @@ class TablePartitioner(DatabaseHandler):
         ranges_2 = self.get_partition_ranges(min_2, max_2, partition_size_2)
         columns = self.get_table_columns(source_table)
 
-        prefix = f"pit_{source_table}"
+        prefix = f"{source_table}"
         pit_schema = prefix
         pit_metadata_table = f"{prefix}_metadata"
         self.drop_schema(pit_schema)

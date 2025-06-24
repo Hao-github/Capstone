@@ -16,21 +16,20 @@ class DatabaseHandler:
         self.engine = create_engine(
             f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.database}"
         )
-        self.schema_cache = self._load_schema_cache()
 
-    def _load_schema_cache(self) -> dict[str, pd.DataFrame]:
+    def get_schema_metadata(self) -> dict[str, pd.DataFrame]:
         query = "SELECT nspname FROM pg_namespace"
         result = self._execute_query(query).fetchall()
-        pit_schemas = set(row[0] for row in result if row[0].startswith("pit_"))
+        pit_schemas = set(row[0] for row in result)
         schema_cache: dict[str, pd.DataFrame] = {}
         for schema in pit_schemas:
-            schema_cache[schema] = pd.read_sql_query(
-                f"SELECT * FROM {schema}.{schema}_metadata", self.engine
-            )
+            try:
+                schema_cache[schema] = pd.read_sql_query(
+                    f"SELECT * FROM {schema}.{schema}_metadata", self.engine
+                )
+            except Exception:
+                continue
         return schema_cache
-
-    def schema_exists(self, schema_name: str) -> bool:
-        return f"pit_{schema_name}" in self.schema_cache.keys()
 
     def drop_schema(self, schema_name: str):
         query = f"DROP SCHEMA IF EXISTS {schema_name} CASCADE"
@@ -77,18 +76,7 @@ class DatabaseHandler:
         )
         return self._execute_query(query).fetchall()
 
-    def select_intervals(self, table: str, column: str) -> list:
-        return (
-            self.schema_cache[f"pit_{table}"]
-            .groupby([f"{column}_start", f"{column}_end"], as_index=False)["part_table"]
-            .apply(list)
-            .to_dict(orient="split")["data"]  # type: ignore
-        )
-
-    def measure_merge_time(
-        self,
-        query: str,
-    ) -> float:
+    def measure_merge_time(self, query: str) -> float:
         query = f"""
             EXPLAIN ANALYZE
             {query}
