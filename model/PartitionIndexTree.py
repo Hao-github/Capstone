@@ -4,7 +4,7 @@ from itertools import product
 
 
 class PartitionIndexTree:
-    def __init__(self, intervals: list[tuple]):
+    def __init__(self, intervals: list[tuple] = []):
         self.nil = PartitionNode.EMPTY_NODE
         self.root = self.nil
         for interval in intervals:

@@ -1,14 +1,15 @@
 from __future__ import annotations
+
 from collections import defaultdict
+from functools import reduce
 from typing import Any
 
+import networkx as nx
 from sqlglot import expressions as exp
 
 from config.config import load_config
 from database.TablePartitioner import TablePartitioner
-from SQLOptimizer import SQLOptimizer
-from functools import reduce
-import networkx as nx
+from model.SQLOptimizer import SQLOptimizer
 
 
 def enumerate_join_orders(edges: list[tuple[str, str]]) -> list[list[tuple[str, str]]]:
@@ -55,10 +56,12 @@ def enumerate_join_orders(edges: list[tuple[str, str]]) -> list[list[tuple[str, 
             path.pop()
             visited.remove(right)
 
-    if nodes_num > 1:
+    if nodes_num > 2:
         for edge in edges:
             left, right = edge
             dfs([edge], {left, right}, edges_map[left] + edges_map[right])
+    else:
+        results.append(edges)
 
     return results
 
@@ -113,7 +116,6 @@ class JoinExpr:
             left_col, right_col, left_table_expr, right_table_expr
         )
         self.alias = alias
-        self.sql = self.join_expr.sql()
         self.related_tables: set[str] = set()
 
     def create_join_expr(self, left_col, right_col, left_table_expr, right_table_expr):
@@ -144,7 +146,7 @@ class JoinExpr:
 class Block:
     def __init__(self, tbls: list[str], table: str, alias: str, join_expr: JoinExpr):
         self.cte_expr = reduce(
-            lambda x, y: x.union(y, all=True),
+            lambda x, y: x.union(y, distinct=True),
             [exp.select("*").from_(exp.to_table(t, db=table)) for t in tbls],
         )
         self.alias = alias
@@ -205,8 +207,31 @@ def generate_recursive_cluster_sql(join_union_order: list[dict[str, Any]]) -> st
                 left_alias = f"{left_table}_{step}_{step_idx}"
                 right_alias = f"{right_table}_{step}_{step_idx}"
                 join_alias = f"{left_alias}_{right_alias}_{step_idx}"
-                left_table_expr = exp.to_table(left_alias)
-                right_table_expr = exp.to_table(right_alias)
+
+                left_table_expr = exp.alias_(
+                    exp.paren(
+                        reduce(
+                            lambda x, y: x.union(y, distinct=False),
+                            [
+                                exp.select("*").from_(exp.to_table(t, db=left_table))
+                                for t in lefts
+                            ],
+                        )
+                    ),
+                    left_alias,
+                )
+                right_table_expr = exp.alias_(
+                    exp.paren(
+                        reduce(
+                            lambda x, y: x.union(y, distinct=False),
+                            [
+                                exp.select("*").from_(exp.to_table(t, db=right_table))
+                                for t in rights
+                            ],
+                        )
+                    ),
+                    right_alias,
+                )
                 join_expr = JoinExpr(
                     join_alias, left_col, right_col, left_table_expr, right_table_expr
                 )
@@ -234,7 +259,7 @@ def generate_recursive_cluster_sql(join_union_order: list[dict[str, Any]]) -> st
             if len(lefts_expr_set) > 1:
                 left_table_expr = exp.alias_(
                     exp.paren(
-                        reduce(lambda x, y: x.union(y, all=True), lefts_expr_set)
+                        reduce(lambda x, y: x.union(y, distinct=False), lefts_expr_set)
                     ),
                     left_alias,
                 )
@@ -243,7 +268,18 @@ def generate_recursive_cluster_sql(join_union_order: list[dict[str, Any]]) -> st
                     exp.paren(lefts_expr_set.pop()), left_alias
                 )
 
-            right_table_expr = exp.to_table(right_alias)
+            right_table_expr = exp.alias_(
+                exp.paren(
+                    reduce(
+                        lambda x, y: x.union(y, distinct=False),
+                        [
+                            exp.select("*").from_(exp.to_table(t, db=right_table))
+                            for t in rights
+                        ],
+                    )
+                ),
+                right_alias,
+            )
             join_expr = JoinExpr(
                 join_alias, left_col, right_col, left_table_expr, right_table_expr
             )
@@ -255,11 +291,11 @@ def generate_recursive_cluster_sql(join_union_order: list[dict[str, Any]]) -> st
             for table in realated_left_tables:
                 table2block[table].join_expr = join_expr
     remaining_blocks: set[Block] = set(table2block.values())
-    final_expr_set = set(block.join_expr.join_expr for block in remaining_blocks)
-    final_expr = reduce(lambda x, y: x.union(y, all=True), final_expr_set)
+    final_expr_list = list(set(block.join_expr.join_expr for block in remaining_blocks))
+    final_expr = reduce(lambda x, y: x.union(y, distinct=False), final_expr_list)
 
-    for block in remaining_blocks:
-        final_expr = final_expr.with_(block.alias, block.cte_expr)
+    # for block in remaining_blocks:
+    #     final_expr = final_expr.with_(block.alias, block.cte_expr, materialized=False)
 
     return final_expr.sql()
 
@@ -300,17 +336,14 @@ def optimizer(so: SQLOptimizer) -> tuple[list[str], str]:
 
 
 example_sql = """
-SELECT * 
-FROM company_type AS ct,
-     info_type AS it,
-     movie_companies AS mc,
-     movie_info_idx AS mi_idx,
-     title AS t
-WHERE ct.id = mc.company_type_id
-  AND t.id = mc.movie_id
-  AND t.id = mi_idx.movie_id
-  AND mc.movie_id = mi_idx.movie_id
-  AND it.id = mi_idx.info_type_id;
+SELECT
+    *
+FROM
+    orders AS o,
+    lineitem AS l
+WHERE
+    l.l_orderkey = o.o_orderkey;
+
 """
 
 
@@ -319,14 +352,28 @@ if __name__ == "__main__":
     tp = TablePartitioner(config)
     so = SQLOptimizer(example_sql, tp.get_schema_metadata())
     sql_with_hints, baseline_query = optimizer(so)
-    with open("baseline_query.sql", "w") as f:
+    with open("output/baseline_query.sql", "w") as f:
         f.write(baseline_query)
-    print("baseline_query:", tp.measure_merge_time(baseline_query))
+    # print("baseline_query:", tp.measure_merge_time(baseline_query))
     for idx, sql in enumerate(sql_with_hints):
-        with open(f"sql_with_hints_{idx}.sql", "w") as f:
+        with open(f"output/sql_with_hints_{idx}.sql", "w") as f:
             f.write(sql)
-        try:
-            
-            print(f"sql_{idx}:", tp.measure_merge_time(sql))
-        except Exception:
-            print(f"sql_{idx} cannot be executed")
+        # try:
+        #     print(f"sql_{idx}:", tp.measure_merge_time(sql))
+        # except Exception:
+        #     print(f"sql_{idx} cannot be executed")
+
+    # 按行划分的情况下
+    # union 的乱序会影响性能，导致前几次测试耗时升高
+    # 要利用pit的原因， where退化成join，也会导致耗时升高
+    # 一结合就会产生一个情况
+    # 按行划分的话基本上表现就是比baseline更差
+
+    # 按range划分的情况下
+    # 依然是60倍的提升
+    # R join S
+    # R1 > S1
+    # S1 > R1
+    # R.id use pit  R.date cannot be used
+    # R1.id range 0-100000
+    # R2.id range 10000-200000

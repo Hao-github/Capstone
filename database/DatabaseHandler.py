@@ -1,8 +1,8 @@
-import re
 from typing import Any
 
 import pandas as pd
 from sqlalchemy import create_engine, text
+import time
 
 
 class DatabaseHandler:
@@ -77,17 +77,10 @@ class DatabaseHandler:
         return self._execute_query(query).fetchall()
 
     def measure_merge_time(self, query: str) -> float:
-        query = f"""
-            EXPLAIN ANALYZE
-            {query}
-           """
-        result = self._execute_query(query).fetchall()
-        last_line = result[-1][0]
-        match = re.search(r"Execution Time: ([\d.]+) ms", last_line)
-        if match:
-            return float(match.group(1)) / 1000
-        else:
-            raise ValueError("Execution Time not found in EXPLAIN ANALYZE output.")
+        start_time = time.perf_counter()
+        self._execute_query(query).fetchall()
+        end_time = time.perf_counter()
+        return end_time - start_time
 
     def _execute_query(self, query: str, **kwargs):
         with self.engine.connect() as conn:
@@ -106,3 +99,7 @@ if __name__ == "__main__":
 
     config = load_config()
     db = DatabaseHandler(config)
+    # explain analysis
+    # baseline: 60s sql_with_hints: 400s
+    # run
+    # baseline: 240s sql_with_hints: 4s

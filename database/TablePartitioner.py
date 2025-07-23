@@ -65,6 +65,48 @@ class TablePartitioner(DatabaseHandler):
             f"Finished partitioning public.{source_table} into {pit_schema}, total {len(ranges)} partitions."
         )
 
+    def partition_table_by_column_nums(self, source_table: str, partition_size: int, column: str):
+        column_count = self.select_data("public", source_table, columns=["COUNT(*)"])[0][0]
+        ranges = self.get_partition_ranges(0, column_count, partition_size)
+        columns = self.get_table_columns(source_table)
+
+        prefix = f"{source_table}"
+        pit_schema = prefix
+        pit_metadata_table = f"{prefix}_metadata"
+        self.drop_schema(pit_schema)
+        pit_columns = {
+            "part_table": "varchar",
+            f"{column}_start": "integer",
+            f"{column}_end": "integer",
+        }
+        self.create_table(pit_schema, pit_metadata_table, pit_columns)
+
+        for i, (start_id, end_id) in enumerate(ranges):
+            part_table = f"{prefix}_{i}"
+            self.create_table(pit_schema, part_table, columns)
+
+            insert_query = f"""
+                INSERT INTO {pit_schema}.{part_table}
+                SELECT * FROM public.{source_table}
+                ORDER BY {column}
+                LIMIT {end_id - start_id} OFFSET {start_id}
+            """
+            self._execute_query(insert_query)
+            min_id, max_id = self.select_data(
+                pit_schema, part_table, columns=[f"MIN({column})", f"MAX({column})"]
+            )[0]
+
+            pit_query = f"""
+                INSERT INTO {pit_schema}.{pit_metadata_table}
+                (part_table, {column}_start, {column}_end)
+                VALUES ('{part_table}', {min_id}, {max_id})
+            """
+            self._execute_query(pit_query)
+
+        print(
+            f"Finished partitioning public.{source_table} into {pit_schema}, total {len(ranges)} partitions."
+        )
+
     def partition_table_2d(
         self,
         source_table: str,

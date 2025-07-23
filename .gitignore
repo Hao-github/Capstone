@@ -2,3 +2,5 @@
 *.ipynb
 __pycache__/
 job_query/*.sql
+output/*
+tpch

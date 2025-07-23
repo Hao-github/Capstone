@@ -4,8 +4,9 @@ import networkx as nx
 import pandas as pd
 from sqlglot import expressions as exp
 from sqlglot import parse_one
+from natsort import natsorted
 
-from model.PartitionIndexTree import PartitionIndexTree
+from PartitionIndexTree import PartitionIndexTree
 
 
 class SQLOptimizer:
@@ -183,6 +184,8 @@ class SQLOptimizer:
         # 构造bipartite graph
         values = []
         for componenent in nx.connected_components(G):
+            # lefts = natsorted([n for n in componenent if G.nodes[n]["bipartite"] == 0])
+            # rights = natsorted([n for n in componenent if G.nodes[n]["bipartite"] == 1])
             lefts = [n for n in componenent if G.nodes[n]["bipartite"] == 0]
             rights = [n for n in componenent if G.nodes[n]["bipartite"] == 1]
             values.append((lefts, rights))
@@ -223,7 +226,7 @@ class SQLOptimizer:
             import json
 
             json.dump(
-                list(cluster_map.values()), open("cluster_map.json", "w"), indent=4
+                list(cluster_map.values()), open("output/cluster_map.json", "w"), indent=4
             )
 
         return cluster_map
