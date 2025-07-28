@@ -65,8 +65,12 @@ class TablePartitioner(DatabaseHandler):
             f"Finished partitioning public.{source_table} into {pit_schema}, total {len(ranges)} partitions."
         )
 
-    def partition_table_by_column_nums(self, source_table: str, partition_size: int, column: str):
-        column_count = self.select_data("public", source_table, columns=["COUNT(*)"])[0][0]
+    def partition_table_by_column_nums(
+        self, source_table: str, partition_size: int, column: str
+    ):
+        column_count = self.select_data("public", source_table, columns=["COUNT(*)"])[
+            0
+        ][0]
         ranges = self.get_partition_ranges(0, column_count, partition_size)
         columns = self.get_table_columns(source_table)
 

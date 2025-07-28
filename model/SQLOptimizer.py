@@ -4,9 +4,8 @@ import networkx as nx
 import pandas as pd
 from sqlglot import expressions as exp
 from sqlglot import parse_one
-from natsort import natsorted
 
-from PartitionIndexTree import PartitionIndexTree
+from model.PartitionIndexTree import PartitionIndexTree
 
 
 class SQLOptimizer:
@@ -19,7 +18,7 @@ class SQLOptimizer:
         self.alias_dict: dict[str, str] = {
             t.alias: t.name for t in self.parsed_query.find_all(exp.Table)
         }
-        self.filter_exprs, self._join_expr = self.__analysis_query()
+        self.filter_exprs, self.join_expr = self.__analysis_query()
 
     def __analysis_query(self):
         where_clause = self.parsed_query.find(exp.Where)
@@ -219,14 +218,16 @@ class SQLOptimizer:
             }
         """
         cluster_map = {}
-        for clause in self._join_expr:
+        for clause in self.join_expr:
             clusters = self.get_cluster_via_pit(clause)
             cluster_map.update({clusters["join"]: clusters})
         if to_json:
             import json
 
             json.dump(
-                list(cluster_map.values()), open("output/cluster_map.json", "w"), indent=4
+                list(cluster_map.values()),
+                open("output/cluster_map.json", "w"),
+                indent=4,
             )
 
         return cluster_map
@@ -234,4 +235,3 @@ class SQLOptimizer:
     @property
     def cluster_map(self):
         return self.get_cluster_map()
-    

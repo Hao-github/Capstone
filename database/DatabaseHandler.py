@@ -88,6 +88,22 @@ class DatabaseHandler:
             conn.commit()
             return ret
 
+    def qury_selectivity(self, schema_name: str, table_name: str, condition: str):
+        query = f"""
+            SELECT AVG(CASE WHEN {condition} THEN 1 ELSE 0 END) AS selectivity
+            FROM (
+                SELECT * from {schema_name}.{table_name} TABLESAMPLE SYSTEM(1)
+            )
+        """
+
+        try:
+            result = self._execute_query(query).fetchone()
+            return float(result[0]) if result else 0.0
+        except Exception as e:
+            print(
+                f"Failed to query selectivity of {schema_name}.{table_name} with condition {condition}: {e}"
+            )
+
 
 if __name__ == "__main__":
     import os
