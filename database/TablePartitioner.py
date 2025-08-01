@@ -52,14 +52,14 @@ class TablePartitioner(DatabaseHandler):
                 SELECT * FROM public.{source_table}
                 WHERE {column} >= {start_id} AND {column} < {end_id}
             """
-            self._execute_query(insert_query)
+            self.execute_query(insert_query)
 
             pit_query = f"""
                 INSERT INTO {pit_schema}.{pit_metadata_table}
                 (part_table, {column}_start, {column}_end)
                 VALUES ('{part_table}', {start_id}, {end_id})
             """
-            self._execute_query(pit_query)
+            self.execute_query(pit_query)
 
         print(
             f"Finished partitioning public.{source_table} into {pit_schema}, total {len(ranges)} partitions."
@@ -95,7 +95,7 @@ class TablePartitioner(DatabaseHandler):
                 ORDER BY {column}
                 LIMIT {end_id - start_id} OFFSET {start_id}
             """
-            self._execute_query(insert_query)
+            self.execute_query(insert_query)
             min_id, max_id = self.select_data(
                 pit_schema, part_table, columns=[f"MIN({column})", f"MAX({column})"]
             )[0]
@@ -105,7 +105,7 @@ class TablePartitioner(DatabaseHandler):
                 (part_table, {column}_start, {column}_end)
                 VALUES ('{part_table}', {min_id}, {max_id})
             """
-            self._execute_query(pit_query)
+            self.execute_query(pit_query)
 
         print(
             f"Finished partitioning public.{source_table} into {pit_schema}, total {len(ranges)} partitions."
@@ -154,14 +154,14 @@ class TablePartitioner(DatabaseHandler):
                     WHERE {column_1} >= {start_1} AND {column_1} < {end_1}
                     AND {column_2} >= {start_2} AND {column_2} < {end_2}
                 """
-                self._execute_query(insert_query)
+                self.execute_query(insert_query)
 
                 pit_query = f"""
                     INSERT INTO {pit_schema}.{pit_metadata_table}
                     (part_table, {column_1}_start, {column_1}_end, {column_2}_start, {column_2}_end)
                     VALUES ('{part_table}', {start_1}, {end_1}, {start_2}, {end_2})
                 """
-                self._execute_query(pit_query)
+                self.execute_query(pit_query)
 
         total_parts = len(ranges_1) * len(ranges_2)
         print(

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from const import OP_NAME2ID, TABLE_KEY2ID, TABLE_NAME2ID
+from model.const import OP_NAME2ID, TABLE_KEY2ID, TABLE_NAME2ID
 from model.SQLOptimizer import SQLOptimizer
 from database.TablePartitioner import TablePartitioner
 
@@ -77,12 +77,14 @@ class CardinalityClassifier(nn.Module):
         x = torch.sigmoid(self.fc3(x))  # 输出为 0~1 概率
         return x
 
-    def encode_sql(self, so: SQLOptimizer):
+    def encode_sql(self, so: SQLOptimizer | str):
         """
         将一个 SQL 转换为三组输入特征向量
         """
         table_feat, join_feat = [], []
 
+        if isinstance(so, str):
+            so = SQLOptimizer(so, self.tp.get_schema_metadata())
         # 提取 JOIN 信息（默认只有一个 join）
         clause = so.join_expr[0]
         ltable, lcolumn, rtable, rcolumn = so.get_condition_from_expr(clause)

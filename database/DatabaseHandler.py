@@ -19,7 +19,7 @@ class DatabaseHandler:
 
     def get_schema_metadata(self) -> dict[str, pd.DataFrame]:
         query = "SELECT nspname FROM pg_namespace"
-        result = self._execute_query(query).fetchall()
+        result = self.execute_query(query).fetchall()
         pit_schemas = set(row[0] for row in result)
         schema_cache: dict[str, pd.DataFrame] = {}
         for schema in pit_schemas:
@@ -33,7 +33,7 @@ class DatabaseHandler:
 
     def drop_schema(self, schema_name: str):
         query = f"DROP SCHEMA IF EXISTS {schema_name} CASCADE"
-        self._execute_query(query)
+        self.execute_query(query)
 
     def create_table(
         self,
@@ -48,20 +48,20 @@ class DatabaseHandler:
         create_schema_query = f"CREATE SCHEMA IF NOT EXISTS {schema_name}"
         query = f"CREATE TABLE IF NOT EXISTS {schema_name}.{table_name} ({columns_str})"
         try:
-            self._execute_query(create_schema_query)
-            self._execute_query(query)
+            self.execute_query(create_schema_query)
+            self.execute_query(query)
         except Exception as e:
             print(f"Error while creating table {table_name}: {e}")
 
     def drop_table(self, schema_name: str, table_name: str):
         query = f"DROP TABLE IF EXISTS {schema_name}.{table_name}"
-        self._execute_query(query)
+        self.execute_query(query)
 
     def insert_data(self, schema_name: str, table_name: str, data: dict[str, Any]):
         columns = ", ".join(data.keys())
         values = ", ".join([f":{k}" for k in data.keys()])
         query = f"INSERT INTO {schema_name}.{table_name} ({columns}) VALUES ({values})"
-        self._execute_query(query, **data)
+        self.execute_query(query, **data)
 
     def select_data(
         self,
@@ -74,15 +74,15 @@ class DatabaseHandler:
         query = (
             f"SELECT {columns_list} FROM {schema_name}.{table_name} WHERE {condition}"
         )
-        return self._execute_query(query).fetchall()
+        return self.execute_query(query).fetchall()
 
     def measure_merge_time(self, query: str) -> float:
         start_time = time.perf_counter()
-        self._execute_query(query).fetchall()
+        self.execute_query(query).fetchall()
         end_time = time.perf_counter()
         return end_time - start_time
 
-    def _execute_query(self, query: str, **kwargs):
+    def execute_query(self, query: str, **kwargs):
         with self.engine.connect() as conn:
             ret = conn.execute(text(query), **kwargs)
             conn.commit()
@@ -97,7 +97,7 @@ class DatabaseHandler:
         """
 
         try:
-            result = self._execute_query(query).fetchone()
+            result = self.execute_query(query).fetchone()
             return float(result[0]) if result else 0.0
         except Exception as e:
             print(
