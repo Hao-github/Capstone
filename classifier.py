@@ -11,7 +11,7 @@ from torch import nn
 
 
 class SQLDataset(Dataset):
-    def __init__(self, model, sql_list, labels):
+    def __init__(self, model: CardinalityClassifier, sql_list, labels):
         self.model = model
         self.sql_list = sql_list
         self.labels = labels

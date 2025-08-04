@@ -74,7 +74,7 @@ class CardinalityClassifier(nn.Module):
         x = torch.cat([table_feats, join_feats, pred_pooled], dim=1)
         x = F.relu(self.bn1(self.fc1(x)))
         x = F.relu(self.bn2(self.fc2(x)))
-        x = torch.sigmoid(self.fc3(x))  # 输出为 0~1 概率
+        x = self.fc3(x)  # 输出为 0~1 概率
         return x
 
     def encode_sql(self, so: SQLOptimizer | str):
