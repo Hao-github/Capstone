@@ -4,10 +4,51 @@ from model.SQLOptimizer import SQLOptimizer
 from model.CardinalityClassifier import CardinalityClassifier
 from model.BloomFilter import BloomFilter
 import torch
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader, random_split, WeightedRandomSampler
 from dataset import label_list, sql_list
+from dataset_2 import label_list as label_list_2, sql_list as sql_list_2
+from dataset_3 import label_list as label_list_3, sql_list as sql_list_3
+from dataset_4 import label_list as label_list_4, sql_list as sql_list_4
+
 import torch.optim as optim
 from torch import nn
+
+import random
+import numpy as np
+
+
+def make_oversampled_loader(dataset, batch_size, collate_fn, drop_last=False):
+    """
+    对二分类训练集做上采样（按少数类赋更高采样权重）。
+    """
+    labels = []
+    for i in range(len(dataset)):
+        item = dataset[i]
+        y = item[-1]                    
+        if torch.is_tensor(y):
+            y = int(y.detach().cpu().view(-1)[0].item())
+        else:
+            y = int(y)
+        labels.append(y)
+
+    labels = np.asarray(labels, dtype=np.int64)
+    # 计算每个样本的采样权重：类别样本数的倒数
+    class_counts = np.bincount(labels, minlength=2) 
+    # 避免除零
+    class_counts = np.where(class_counts == 0, 1, class_counts)
+    sample_weights = (1.0 / class_counts[labels]).astype(np.float64)
+
+    sampler = WeightedRandomSampler(sample_weights, # type: ignore
+                                    num_samples=len(sample_weights),
+                                    replacement=True)
+
+    return DataLoader(dataset,
+                      batch_size=batch_size,
+                      sampler=sampler,        
+                      drop_last=drop_last,
+                      collate_fn=collate_fn)
+
+
 
 
 class SQLDataset(Dataset):
@@ -99,6 +140,8 @@ if __name__ == "__main__":
 
     print("finish initializing")
 
+    label_list = label_list_2 + label_list_3 + label_list_4 + label_list
+    sql_list = sql_list_2 + sql_list_3 + sql_list_4 + sql_list
     # 标签归一化成 {0,1}
     labels = [1 if label > 0 else 0 for label in label_list]
     print(f"positive ratio: {sum(labels) / len(labels):.4f}")
@@ -112,9 +155,10 @@ if __name__ == "__main__":
     val_size = total_size - train_size
     train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
 
-    train_loader = DataLoader(
-        train_dataset, batch_size=32, shuffle=True, collate_fn=collate_fn
-    )
+    # train_loader = DataLoader(
+    #     train_dataset, batch_size=32, shuffle=True, collate_fn=collate_fn
+    # )
+    train_loader = make_oversampled_loader(train_dataset, batch_size=32, collate_fn=collate_fn)
     val_loader = DataLoader(
         val_dataset, batch_size=32, shuffle=False, collate_fn=collate_fn
     )
@@ -156,6 +200,8 @@ if __name__ == "__main__":
                 val_loss += loss.item()
                 probs = torch.sigmoid(outputs)
                 preds = (probs > 0.5).float()
+                # print(preds)
+                # print(batch_labels)
                 val_correct += (preds == batch_labels).sum().item()
                 val_samples += batch_labels.size(0)
 

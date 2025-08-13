@@ -19,19 +19,16 @@ class PredicateEncoder(nn.Module):
     每个谓词的输入维度是 JOIN_KEY + OP + 选择率，共 JOIN_KEY_DIM + OP_DIM + 1 维。
     """
 
-    def __init__(self, input_dim, hidden_dims=[64, 64, 32]):
+    def __init__(self, input_dim, hidden_dims=[128, 64, 32]):
         super().__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dims[0])
         self.fc2 = nn.Linear(hidden_dims[0], hidden_dims[1])
         self.fc3 = nn.Linear(hidden_dims[1], hidden_dims[2])
-        self.bn1 = nn.BatchNorm1d(hidden_dims[0])
-        self.bn2 = nn.BatchNorm1d(hidden_dims[1])
-        self.bn3 = nn.BatchNorm1d(hidden_dims[2])
 
     def forward(self, x):
-        x = F.relu(self.bn1(self.fc1(x)))
-        x = F.relu(self.bn2(self.fc2(x)))
-        x = F.relu(self.bn3(self.fc3(x)))
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
         return x
 
 
