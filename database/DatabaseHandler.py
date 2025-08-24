@@ -93,12 +93,18 @@ class DatabaseHandler:
             SELECT AVG(CASE WHEN {condition} THEN 1 ELSE 0 END) AS selectivity
             FROM (
                 SELECT * from {schema_name}.{table_name} TABLESAMPLE SYSTEM(1)
-            )
+            ) t
         """
-
         try:
-            result = self.execute_query(query).fetchone()
-            return float(result[0]) if result else 0.0
+            values = []
+            for _ in range(3):
+                row = self.execute_query(query).fetchone()
+                val = float(row[0]) if row and row[0] is not None else 0.0
+                values.append(val)
+
+            values.sort()
+            median_val = values[1]  # 三个结果的中位数
+            return median_val
         except Exception as e:
             print(
                 f"Failed to query selectivity of {schema_name}.{table_name} with condition {condition}: {e}"

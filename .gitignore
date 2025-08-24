@@ -4,3 +4,4 @@ __pycache__/
 job_query/*.sql
 output/*
 tpch
+*.sql
