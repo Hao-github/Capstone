@@ -51,27 +51,26 @@ class CardinalityClassifier(nn.Module):
         self.fc3 = nn.Linear(final_hidden_dims[1], 1)
         self.bn1 = nn.BatchNorm1d(final_hidden_dims[0])
         self.bn2 = nn.BatchNorm1d(final_hidden_dims[1])
-
-    def forward(self, table_feats, join_feats, predicate_feats):
+        
+    def forward(self, table_feats, join_feats, predicate_feats, mask=None):
         """
-        前向传播，接收向量输入并输出一个概率。
-
-        参数：
-        - table_feats: (B, table_dim) 表和子表的 One-hot
-        - join_feats: (B, join_key_dim) 连接列 One-hot
-        - predicate_feats: (B, P, predicate_dim) 多个谓词向量组成的集合
-
-        返回：
-        - (B, 1) 的概率预测张量
+        mask: (B, P) 二值 mask 表示每条样本的谓词数量
         """
         B, P, D = predicate_feats.size()
-        pred_encoded = self.predicate_encoder(predicate_feats.view(B * P, D))
-        pred_encoded = pred_encoded.view(B, P, -1)
-        pred_pooled = pred_encoded.mean(dim=1)  # 对谓词编码结果做平均池化
+        pred_encoded = self.predicate_encoder(predicate_feats.view(B * P, D)).view(B, P, -1)
+
+        if mask is not None:
+            mask = mask.unsqueeze(-1).float()  # (B, P, 1)
+            pred_encoded = pred_encoded * mask
+            denom = mask.sum(dim=1).clamp(min=1e-6)  # 防止除0
+            pred_pooled = pred_encoded.sum(dim=1) / denom
+        else:
+            pred_pooled = pred_encoded.mean(dim=1)
+
         x = torch.cat([table_feats, join_feats, pred_pooled], dim=1)
         x = F.relu(self.bn1(self.fc1(x)))
         x = F.relu(self.bn2(self.fc2(x)))
-        x = self.fc3(x)  # 输出为 0~1 概率
+        x = self.fc3(x)
         return x
 
     def encode_sql(self, so: SQLOptimizer | str):
@@ -137,17 +136,20 @@ class CardinalityClassifier(nn.Module):
 
         parsed = [self.encode_sql(so) for so in so_list]
         max_pred = max(len(p[2]) for p in parsed)  # 对齐谓词个数
-        table_feats, join_feats, pred_feats = [], [], []
+        table_feats, join_feats, pred_feats, masks = [], [], [], []
 
         for table, join, preds in parsed:
             table_feats.append(torch.tensor(table, dtype=torch.float))
             join_feats.append(torch.tensor(join, dtype=torch.float))
+            mask = [1] * len(preds) + [0] * (max_pred - len(preds))
             while len(preds) < max_pred:
                 preds.append([0.0] * self.predicate_input_dim)
             pred_feats.append(torch.tensor(preds, dtype=torch.float))
+            masks.append(torch.tensor(mask, dtype=torch.float))
 
         return (
             torch.stack(table_feats),
             torch.stack(join_feats),
             torch.stack(pred_feats),
+            torch.stack(masks),
         )

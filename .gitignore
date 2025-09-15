@@ -1,5 +1,4 @@
 .vscode/
-*.ipynb
 __pycache__/
 job_query/*.sql
 output/*

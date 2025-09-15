@@ -358,22 +358,3 @@ if __name__ == "__main__":
     for idx, sql in enumerate(sql_with_hints):
         with open(f"output/sql_with_hints_{idx}.sql", "w") as f:
             f.write(sql)
-        # try:
-        #     print(f"sql_{idx}:", tp.measure_merge_time(sql))
-        # except Exception:
-        #     print(f"sql_{idx} cannot be executed")
-
-    # 按行划分的情况下
-    # union 的乱序会影响性能，导致前几次测试耗时升高
-    # 要利用pit的原因， where退化成join，也会导致耗时升高
-    # 一结合就会产生一个情况
-    # 按行划分的话基本上表现就是比baseline更差
-
-    # 按range划分的情况下
-    # 依然是60倍的提升
-    # R join S
-    # R1 > S1
-    # S1 > R1
-    # R.id use pit  R.date cannot be used
-    # R1.id range 0-100000
-    # R2.id range 10000-200000
